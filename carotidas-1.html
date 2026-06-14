@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Carótidas">
+<title>Duplex Scan Carótidas</title>
+<style>* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; } body { font-family:system-ui,-apple-system,sans-serif; background:#f0f4f8; min-height:100vh; } @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useCallback } = React;
+
+// ── textos padrão ──────────────────────────────────────────────────────────
+const T = {
+  acc_normal: (imc) => `A Artéria Carótida Comum apresenta-se com diâmetro normal, suas paredes com aspectos morfológicos normais, espessura de complexo médio-intimal medindo ${imc ? imc + " mm" : "_____ mm"} (normal até 1,0 mm). Não se observam placas ateroscleróticas. A análise do fluxo sanguíneo ao Doppler não evidencia turbulência espectral e as velocidades são normais.`,
+  acc_achado: "",
+  bulbo_normal: "O Bulbo Carotídeo apresenta aspectos morfológicos normais. Não se observam placas ateroscleróticas.",
+  aci_normal: "A Artéria Carótida Interna apresenta diâmetro normal e trajeto não sinuoso, não se observando a presença de placas ateroscleróticas intraluminais. A análise do fluxo sanguíneo ao Doppler demonstra fluxo laminar e as velocidades são normais.",
+  ace_normal: "A Artéria Carótida Externa apresenta diâmetro normal, não se observando a presença de placas ateroscleróticas intraluminais. A análise do fluxo sanguíneo ao Doppler demonstra fluxo laminar e as velocidades são normais.",
+  vert_normal: "A Artéria Vertebral apresenta diâmetro normal. Não se observam placas ateroscleróticas ao nível de sua origem. A análise do fluxo sanguíneo ao Doppler demonstra fluxo de direção cefálica e as velocidades são normais.",
+};
+
+const fmt = v => v ? parseFloat(v).toFixed(2).replace(".", ",") : "";
+const fmtImc = v => v ? parseFloat(v).toFixed(1).replace(".", ",") : "";
+
+// NASCET classification
+const nascetClass = vps => {
+  if (!vps) return "—";
+  const v = parseFloat(vps);
+  if (isNaN(v)) return "—";
+  if (v < 140) return "< 50%";
+  if (v < 230) return "50–69%";
+  if (v < 400) return "70–89%";
+  return "≥ 90%";
+};
+
+const initLado = () => ({
+  acc: { ok: true, texto: "", imc: "", vps: "", placa: { tem: false, local: "", eco: "", superficie: "" } },
+  bulbo: { ok: true, texto: "", placa: { tem: false, local: "", eco: "", superficie: "" } },
+  aci: { ok: true, texto: "", vps: "", placa: { tem: false, local: "", eco: "", superficie: "" } },
+  ace: { ok: true, texto: "", vps: "", placa: { tem: false, local: "", eco: "", superficie: "" } },
+  vert: { ok: true, texto: "", vps: "" },
+});
+
+// ── hook de voz ──────────────────────────────────────────────────────────────
+function useVoz(onResult) {
+  const recRef = useRef(null);
+  const [ativo, setAtivo] = useState(false);
+  const iniciar = useCallback(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { alert("Voz não suportada. Use Chrome ou Safari."); return; }
+    const rec = new SR();
+    rec.lang = "pt-BR";
+    rec.interimResults = false;
+    rec.onresult = e => onResult(e.results[0][0].transcript.trim());
+    rec.onend = () => setAtivo(false);
+    rec.onerror = () => setAtivo(false);
+    recRef.current = rec;
+    rec.start();
+    setAtivo(true);
+  }, [onResult]);
+  const parar = useCallback(() => { recRef.current?.stop(); setAtivo(false); }, []);
+  return { ativo, iniciar, parar };
+}
+
+const isOk = t => ["ok","okay","normal","oque","o k"].includes(t.toLowerCase().trim());
+
+const numVoz = t => {
+  let s = t.toLowerCase()
+    .replace("zero","0").replace("um","1").replace("dois","2").replace("três","3")
+    .replace("quatro","4").replace("cinco","5").replace("seis","6").replace("sete","7")
+    .replace("oito","8").replace("nove","9").replace("vírgula",".").replace(",",".");
+  return parseFloat(s.replace(/[^0-9.]/g,""));
+};
+
+// ── componentes base ──────────────────────────────────────────────────────────
+const MicBtn = ({ ativo, onStart, onStop, size=18 }) => (
+  <button onPointerDown={e=>{ e.preventDefault(); ativo ? onStop() : onStart(); }}
+    style={{ background:ativo?"#e74c3c":"#2e6da4", color:"#fff", border:"none", borderRadius:8,
+      minWidth:44, minHeight:44, fontSize:size, cursor:"pointer", boxShadow:ativo?"0 0 0 4px #e74c3c33":"none", flexShrink:0 }}>
+    {ativo?"⏹":"🎙"}
+  </button>
+);
+
+function CampoVozTexto({ value, onChange, placeholder }) {
+  const { ativo, iniciar, parar } = useVoz(useCallback(t => onChange(t), [onChange]));
+  return (
+    <div style={{ display:"flex", gap:8, marginBottom:6 }}>
+      <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+        style={{ flex:1, border:ativo?"2px solid #e74c3c":"1px solid #c5d1de", borderRadius:8, padding:"8px 10px", fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }}/>
+      <MicBtn ativo={ativo} onStart={iniciar} onStop={parar} size={15}/>
+    </div>
+  );
+}
+
+function CampoOkAchado({ valor, onChange, placeholder, label }) {
+  const handleVoz = useCallback(t => {
+    if (isOk(t)) onChange({ ...valor, ok:true, texto:"" });
+    else onChange({ ...valor, ok:false, texto:t });
+  }, [valor, onChange]);
+  const { ativo, iniciar, parar } = useVoz(handleVoz);
+  return (
+    <div style={{ marginBottom:8 }}>
+      {label && <div style={{ fontSize:11, fontWeight:700, color:"#1a3a5c", textTransform:"uppercase", letterSpacing:.3, marginBottom:4 }}>{label}</div>}
+      <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+        <div style={{ flex:1 }}>
+          <div style={{ display:"flex", gap:6, marginBottom:valor.ok?0:6 }}>
+            {["ok","achado"].map(m=>(
+              <button key={m} onClick={()=>onChange({...valor, ok:m==="ok", texto:m==="ok"?"":valor.texto})}
+                style={{ flex:1, padding:"9px 4px", borderRadius:8, border:"2px solid", cursor:"pointer", fontWeight:700, fontSize:12,
+                  borderColor:(valor.ok&&m==="ok")||(!valor.ok&&m==="achado")?(m==="achado"?"#e67e22":"#1a3a5c"):"#dde3ea",
+                  background:(valor.ok&&m==="ok")||(!valor.ok&&m==="achado")?(m==="achado"?"#fdf3e3":"#eef3f8"):"#f8f9fa",
+                  color:(valor.ok&&m==="ok")||(!valor.ok&&m==="achado")?(m==="achado"?"#e67e22":"#1a3a5c"):"#999" }}>
+                {m==="ok"?"✓ OK":"⚠ Achado"}
+              </button>
+            ))}
+          </div>
+          {!valor.ok && (
+            <textarea value={valor.texto} onChange={e=>onChange({...valor,texto:e.target.value})}
+              placeholder={placeholder||"Descreva o achado..."}
+              style={{ width:"100%", minHeight:60, border:"1.5px solid #e67e22", borderRadius:8, padding:"8px 10px",
+                fontSize:13, fontFamily:"inherit", resize:"vertical", boxSizing:"border-box", background:"#fffdf9" }}/>
+          )}
+          {ativo && <div style={{ fontSize:11, color:"#e74c3c", fontWeight:600, marginTop:3 }}>🎙 Ouvindo... diga "OK" ou descreva</div>}
+        </div>
+        <MicBtn ativo={ativo} onStart={iniciar} onStop={parar}/>
+      </div>
+    </div>
+  );
+}
+
+function CampoNum({ value, onChange, label, placeholder="0,0", decimais=2 }) {
+  const handleVoz = useCallback(t => {
+    const n = numVoz(t);
+    if (!isNaN(n)) onChange(n.toFixed(decimais));
+  }, [onChange, decimais]);
+  const { ativo, iniciar, parar } = useVoz(handleVoz);
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:6 }}>
+      <span style={{ fontSize:11, fontWeight:600, color:"#666", whiteSpace:"nowrap" }}>{label}</span>
+      <input type="number" step={decimais===1?"0.1":"0.01"} value={value} onChange={e=>onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{ flex:1, border:ativo?"2px solid #e74c3c":"1px solid #c5d1de", borderRadius:7, padding:"7px 8px", fontSize:13, boxSizing:"border-box" }}/>
+      <MicBtn ativo={ativo} onStart={iniciar} onStop={parar} size={15}/>
+    </div>
+  );
+}
+
+const Toggle = ({ checked, onChange }) => (
+  <div onClick={()=>onChange(!checked)} style={{ width:36, height:20, borderRadius:10, background:checked?"#e67e22":"#ccc",
+    position:"relative", cursor:"pointer", flexShrink:0, transition:"background .2s" }}>
+    <div style={{ position:"absolute", top:2, left:checked?16:2, width:16, height:16, borderRadius:"50%", background:"#fff", transition:"left .2s" }}/>
+  </div>
+);
+
+function CampoPlaca({ placa, onChange }) {
+  return (
+    <div style={{ marginTop:8, background:placa.tem?"#fff8f0":"#f8f9fa", borderRadius:8, padding:"8px 10px", border:placa.tem?"1.5px solid #e67e22":"1.5px solid #eee" }}>
+      <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", marginBottom:placa.tem?10:0 }}>
+        <Toggle checked={placa.tem} onChange={v=>onChange({...placa,tem:v})}/>
+        <span style={{ fontSize:12, fontWeight:700, color:placa.tem?"#e67e22":"#888" }}>Placa aterosclerótica</span>
+      </label>
+      {placa.tem && (
+        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#555", textTransform:"uppercase", marginBottom:2 }}>Localização</div>
+          <CampoVozTexto value={placa.local} onChange={v=>onChange({...placa,local:v})} placeholder="Ex: parede posterior, terço proximal"/>
+          <div style={{ fontSize:11, fontWeight:700, color:"#555", textTransform:"uppercase", marginTop:4 }}>Ecogenicidade</div>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+            {["Hipoecoica","Isoecoica","Hiperecoica","Calcificada","Mista"].map(o=>(
+              <button key={o} onClick={()=>onChange({...placa,eco:o})}
+                style={{ padding:"6px 10px", borderRadius:7, border:"1.5px solid", cursor:"pointer", fontSize:12, fontWeight:600,
+                  borderColor:placa.eco===o?"#e67e22":"#dde3ea", background:placa.eco===o?"#fdf3e3":"#f8f9fa", color:placa.eco===o?"#e67e22":"#666" }}>
+                {o}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize:11, fontWeight:700, color:"#555", textTransform:"uppercase", marginTop:4 }}>Superfície</div>
+          <div style={{ display:"flex", gap:6 }}>
+            {["Regular","Irregular","Ulcerada"].map(o=>(
+              <button key={o} onClick={()=>onChange({...placa,superficie:o})}
+                style={{ flex:1, padding:"8px 4px", borderRadius:7, border:"1.5px solid", cursor:"pointer", fontSize:12, fontWeight:600,
+                  borderColor:placa.superficie===o?"#e67e22":"#dde3ea", background:placa.superficie===o?"#fdf3e3":"#f8f9fa", color:placa.superficie===o?"#e67e22":"#666" }}>
+                {o}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const Bloco = ({ title, children, destaque }) => (
+  <div style={{ background:"#fff", borderRadius:12, padding:14, marginBottom:10, boxShadow:"0 1px 6px #0001", border:destaque?"2px solid #e67e22":"1.5px solid #e8edf2" }}>
+    <div style={{ fontWeight:700, fontSize:13, color:"#1a3a5c", textTransform:"uppercase", letterSpacing:.4, marginBottom:12, paddingBottom:8, borderBottom:"1px solid #eef0f3" }}>
+      {title}
+    </div>
+    {children}
+  </div>
+);
+
+const Divisor = ({ label }) => (
+  <div style={{ display:"flex", alignItems:"center", gap:10, margin:"14px 0 8px" }}>
+    <div style={{ flex:1, height:1, background:"#dde3ea" }}/>
+    <span style={{ fontSize:11, fontWeight:700, color:"#2e6da4", textTransform:"uppercase", letterSpacing:.5, whiteSpace:"nowrap" }}>{label}</span>
+    <div style={{ flex:1, height:1, background:"#dde3ea" }}/>
+  </div>
+);
+
+function LadoForm({ m, setter, label }) {
+  const upd = (f,v) => setter(p=>({...p,[f]:v}));
+  return (
+    <div style={{ marginBottom:24 }}>
+      <div style={{ background:"linear-gradient(90deg,#1a3a5c,#2e6da4)", color:"#fff", borderRadius:12,
+        padding:"12px 18px", marginBottom:14, fontWeight:700, fontSize:15, textTransform:"uppercase", letterSpacing:.5 }}>
+        {label}
+      </div>
+
+      <Bloco title="ACC — Artéria Carótida Comum" destaque={!m.acc.ok}>
+        <CampoOkAchado valor={m.acc} onChange={v=>upd("acc",{...m.acc,...v})}
+          placeholder="Ex: Espessamento difuso de complexo médio-intimal..."/>
+        <CampoNum value={m.acc.imc} onChange={v=>upd("acc",{...m.acc,imc:v})} label="IMC (mm)" placeholder="0,0" decimais={1}/>
+        <CampoNum value={m.acc.vps} onChange={v=>upd("acc",{...m.acc,vps:v})} label="VPS (cm/s)" placeholder="0,0" decimais={1}/>
+        <CampoPlaca placa={m.acc.placa} onChange={v=>upd("acc",{...m.acc,placa:v})}/>
+      </Bloco>
+
+      <Bloco title="Bulbo Carotídeo" destaque={!m.bulbo.ok || m.bulbo.placa.tem}>
+        <CampoOkAchado valor={m.bulbo} onChange={v=>upd("bulbo",{...m.bulbo,...v})}
+          placeholder="Ex: Irregularidade parietal no bulbo..."/>
+        <CampoPlaca placa={m.bulbo.placa} onChange={v=>upd("bulbo",{...m.bulbo,placa:v})}/>
+      </Bloco>
+
+      <Bloco title="ACI — Artéria Carótida Interna" destaque={!m.aci.ok || m.aci.placa.tem}>
+        <CampoOkAchado valor={m.aci} onChange={v=>upd("aci",{...m.aci,...v})}
+          placeholder="Ex: Trajeto sinuoso, placa em terço proximal..."/>
+        <CampoNum value={m.aci.vps} onChange={v=>upd("aci",{...m.aci,vps:v})} label="VPS (cm/s)" placeholder="0,0" decimais={1}/>
+        <CampoPlaca placa={m.aci.placa} onChange={v=>upd("aci",{...m.aci,placa:v})}/>
+      </Bloco>
+
+      <Bloco title="ACE — Artéria Carótida Externa" destaque={!m.ace.ok || m.ace.placa.tem}>
+        <CampoOkAchado valor={m.ace} onChange={v=>upd("ace",{...m.ace,...v})}
+          placeholder="Ex: Placa calcificada em origem da ACE..."/>
+        <CampoNum value={m.ace.vps} onChange={v=>upd("ace",{...m.ace,vps:v})} label="VPS (cm/s)" placeholder="0,0" decimais={1}/>
+        <CampoPlaca placa={m.ace.placa} onChange={v=>upd("ace",{...m.ace,placa:v})}/>
+      </Bloco>
+
+      <Bloco title="Artéria Vertebral" destaque={!m.vert.ok}>
+        <CampoOkAchado valor={m.vert} onChange={v=>upd("vert",{...m.vert,...v})}
+          placeholder="Ex: Fluxo invertido (subclavian steal), hipoplasia..."/>
+        <CampoNum value={m.vert.vps} onChange={v=>upd("vert",{...m.vert,vps:v})} label="VPS (cm/s)" placeholder="0,0" decimais={1}/>
+      </Bloco>
+    </div>
+  );
+}
+
+// ── geração do laudo HTML ─────────────────────────────────────────────────────
+function descPlaca(placa, vaso) {
+  if (!placa.tem) return "";
+  const local = placa.local ? ` em ${placa.local}` : "";
+  const eco = placa.eco ? ` de aspecto ${placa.eco.toLowerCase()}` : "";
+  const sup = placa.superficie ? `, com superfície ${placa.superficie.toLowerCase()}` : "";
+  return `Observa-se <strong>placa aterosclerótica${local}${eco}${sup}</strong>.`;
+}
+
+function gerarHTML(pac, dir, esq) {
+  const b = t => `<strong>${t}</strong>`;
+
+  const descACC = (m, lado) => {
+    const placa = descPlaca(m.acc.placa, "ACC");
+    if (m.acc.ok && !m.acc.placa.tem) {
+      return `<p>A Artéria Carótida Comum ${lado} apresenta-se com diâmetro normal, suas paredes com aspectos morfológicos normais, espessura de complexo médio-intimal medindo ${m.acc.imc ? fmtImc(m.acc.imc) + " mm" : "___ mm"} (normal até 1,0 mm). Não se observam placas ateroscleróticas. A análise do fluxo sanguíneo ao Doppler não evidencia turbulência espectral e as velocidades são normais.</p>`;
+    }
+    return `<p>${b(m.acc.texto || `A Artéria Carótida Comum ${lado} apresenta alterações descritas abaixo.`)} IMC: ${m.acc.imc ? fmtImc(m.acc.imc) + " mm" : "___"}. ${placa}</p>`;
+  };
+
+  const descBulbo = (m) => {
+    const placa = descPlaca(m.bulbo.placa, "Bulbo");
+    if (m.bulbo.ok && !m.bulbo.placa.tem) return `<p>O Bulbo Carotídeo apresenta aspectos morfológicos normais. Não se observam placas ateroscleróticas.</p>`;
+    return `<p>${b(m.bulbo.texto || "O Bulbo Carotídeo apresenta alterações.")} ${placa}</p>`;
+  };
+
+  const descACI = (m) => {
+    const placa = descPlaca(m.aci.placa, "ACI");
+    if (m.aci.ok && !m.aci.placa.tem) return `<p>A Artéria Carótida Interna apresenta diâmetro normal e trajeto não sinuoso, não se observando a presença de placas ateroscleróticas intraluminais. A análise do fluxo sanguíneo ao Doppler demonstra fluxo laminar e as velocidades são normais.</p>`;
+    return `<p>${b(m.aci.texto || "A Artéria Carótida Interna apresenta alterações.")} ${placa}</p>`;
+  };
+
+  const descACE = (m) => {
+    const placa = descPlaca(m.ace.placa, "ACE");
+    if (m.ace.ok && !m.ace.placa.tem) return `<p>A Artéria Carótida Externa apresenta diâmetro normal, não se observando a presença de placas ateroscleróticas intraluminais. A análise do fluxo sanguíneo ao Doppler demonstra fluxo laminar e as velocidades são normais.</p>`;
+    return `<p>${b(m.ace.texto || "A Artéria Carótida Externa apresenta alterações.")} ${placa}</p>`;
+  };
+
+  const descVert = (m, lado) => {
+    if (m.vert.ok) return `<p>A Artéria Vertebral ${lado} apresenta diâmetro normal. Não se observam placas ateroscleróticas ao nível de sua origem. A análise do fluxo sanguíneo ao Doppler demonstra fluxo de direção cefálica e as velocidades são normais.</p>`;
+    return `<p>${b(m.vert.texto || `A Artéria Vertebral ${lado} apresenta alterações.`)}</p>`;
+  };
+
+  const nascetRow = (label, d, e) => {
+    const vd = d ? parseFloat(d) : null;
+    const ve = e ? parseFloat(e) : null;
+    return `<tr>
+      <td><strong>${label}</strong></td>
+      <td>${vd ? vd.toFixed(1).replace(".",",") : "—"}</td>
+      <td>${nascetClass(vd)}</td>
+      <td>${ve ? ve.toFixed(1).replace(".",",") : "—"}</td>
+      <td>${nascetClass(ve)}</td>
+    </tr>`;
+  };
+
+  const temAlteracao = m => !m.acc.ok || !m.bulbo.ok || !m.aci.ok || !m.ace.ok || !m.vert.ok
+    || m.acc.placa.tem || m.bulbo.placa.tem || m.aci.placa.tem || m.ace.placa.tem;
+
+  const conclusao = () => {
+    const items = [];
+    const algumAchado = temAlteracao(dir) || temAlteracao(esq);
+    if (!algumAchado) {
+      items.push("Estudo ecográfico e Doppler das Artérias Carótidas e Vertebrais dentro dos limites normais.");
+    } else {
+      // Placas
+      [[dir,"direita"],[esq,"esquerda"]].forEach(([m,lado])=>{
+        ["acc","bulbo","aci","ace"].forEach(seg=>{
+          if (m[seg].placa.tem) {
+            const local = m[seg].placa.local ? ` em ${m[seg].placa.local}` : "";
+            const eco = m[seg].placa.eco ? `, aspecto ${m[seg].placa.eco.toLowerCase()}` : "";
+            const sup = m[seg].placa.superficie ? `, superfície ${m[seg].placa.superficie.toLowerCase()}` : "";
+            const segLabel = {acc:"ACC",bulbo:"Bulbo",aci:"ACI",ace:"ACE"}[seg];
+            items.push(b(`Placa aterosclerótica em ${segLabel} ${lado}${local}${eco}${sup}.`));
+          }
+        });
+        if (!m.vert.ok && m.vert.texto) items.push(b(m.vert.texto));
+        if (!m.acc.ok && m.acc.texto) items.push(b(m.acc.texto));
+        if (!m.aci.ok && m.aci.texto) items.push(b(m.aci.texto));
+        if (!m.ace.ok && m.ace.texto) items.push(b(m.ace.texto));
+        if (!m.bulbo.ok && m.bulbo.texto) items.push(b(m.bulbo.texto));
+      });
+      // Grau de estenose se VPS elevada
+      [[dir,"direita"],[esq,"esquerda"]].forEach(([m,lado])=>{
+        ["aci","ace","acc"].forEach(seg=>{
+          const vps = parseFloat(m[seg].vps);
+          if (!isNaN(vps) && vps >= 140) {
+            const segLabel = {aci:"ACI",ace:"ACE",acc:"ACC"}[seg];
+            items.push(b(`Estenose ${nascetClass(vps)} em ${segLabel} ${lado} (VPS ${vps.toFixed(1).replace(".",",")} cm/s).`));
+          }
+        });
+      });
+    }
+    return items.map(t=>`<li>${t}</li>`).join("\n");
+  };
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8">
+<title>Laudo – ${pac.nome}</title>
+<style>
+@page{size:A4;margin:2cm}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000;line-height:1.55}
+.cabecalho{margin-bottom:10px}
+.cabecalho p{margin:1px 0}
+h1{text-align:center;font-size:13pt;font-weight:bold;text-transform:uppercase;margin-bottom:5px}
+.sub{text-align:center;font-size:10.5pt;text-transform:uppercase;margin-bottom:3px}
+.lado{font-size:11pt;font-weight:bold;text-transform:uppercase;margin:16px 0 6px;border-bottom:1px solid #333;padding-bottom:2px}
+.vaso{font-weight:bold;text-transform:uppercase;margin:10px 0 4px}
+p{margin-bottom:5px}
+table{width:100%;border-collapse:collapse;margin:12px 0 14px;font-size:10pt}
+th{background:#e8e8e8;border:1px solid #999;padding:5px 7px;text-align:center;font-weight:bold;font-size:9.5pt}
+td{border:1px solid #bbb;padding:4px 7px;text-align:center;font-size:10pt}
+td:first-child{text-align:left;font-weight:600}
+.conc{font-size:12pt;font-weight:bold;font-style:italic;text-transform:uppercase;margin:18px 0 8px}
+ul{list-style:disc;padding-left:22px}
+li{margin-bottom:5px}
+.obs{font-size:9.5pt;color:#333;margin-top:14px;border-top:1px solid #ddd;padding-top:10px}
+.obs p{margin-bottom:4px}
+.ass{margin-top:40px;text-align:center}
+.ass .linha{border-top:1px solid #333;width:60%;margin:0 auto 8px}
+.ass .nome{font-weight:bold;font-size:11pt}
+.page-break{page-break-before:always}
+.intro{font-size:10.5pt;margin-top:10px;margin-bottom:4px}
+</style></head><body>
+
+<!-- PÁGINA 1: DIREITA -->
+<div class="cabecalho">
+  <p><strong>PACIENTE: ${pac.nome.toUpperCase()}</strong></p>
+  <p>DATA DE NASCIMENTO: ${pac.dn}</p>
+  <p>DATA DO EXAME: ${pac.data}</p>
+</div>
+<h1>Ultrassonografia Duplex Scan de Artérias Carótidas e Vertebrais</h1>
+<p class="sub">Investigação de Doença Cerebrovascular</p>
+${pac.aparelho?`<p style="text-align:center;font-size:10pt;margin-top:2px">APARELHO: ${pac.aparelho}</p>`:""}
+<p class="intro">Qualidade técnica: Adequada. Realizado estudo ultrassonográfico arterial empregando-se transdutor linear multifrequencial de 5,0 a 12,0 MHz, com técnicas Bidimensional e Doppler com mapeamento de fluxo a cores.</p>
+
+<p class="lado">DIREITA</p>
+<p class="vaso">Artéria Carótida Comum</p>
+${descACC(dir,"direita")}
+<p class="vaso">Bulbo Carotídeo</p>
+${descBulbo(dir)}
+<p class="vaso">Artéria Carótida Interna</p>
+${descACI(dir)}
+<p class="vaso">Artéria Carótida Externa</p>
+${descACE(dir)}
+<p class="vaso">Artéria Vertebral Direita</p>
+${descVert(dir,"direita")}
+
+<!-- PÁGINA 2: ESQUERDA -->
+<div class="page-break">
+  <div class="cabecalho">
+    <p><strong>PACIENTE: ${pac.nome.toUpperCase()}</strong></p>
+    <p>DATA DE NASCIMENTO: ${pac.dn}</p>
+    <p>DATA DO EXAME: ${pac.data}</p>
+  </div>
+  <h1>Ultrassonografia Duplex Scan de Artérias Carótidas e Vertebrais</h1>
+  <p class="sub">Investigação de Doença Cerebrovascular</p>
+  ${pac.aparelho?`<p style="text-align:center;font-size:10pt;margin-top:2px">APARELHO: ${pac.aparelho}</p>`:""}
+
+  <p class="lado">ESQUERDA</p>
+  <p class="vaso">Artéria Carótida Comum</p>
+  ${descACC(esq,"esquerda")}
+  <p class="vaso">Bulbo Carotídeo</p>
+  ${descBulbo(esq)}
+  <p class="vaso">Artéria Carótida Interna</p>
+  ${descACI(esq)}
+  <p class="vaso">Artéria Carótida Externa</p>
+  ${descACE(esq)}
+  <p class="vaso">Artéria Vertebral Esquerda</p>
+  ${descVert(esq,"esquerda")}
+</div>
+
+<!-- PÁGINA 3: TABELA + CONCLUSÃO -->
+<div class="page-break">
+  <div class="cabecalho">
+    <p><strong>PACIENTE: ${pac.nome.toUpperCase()}</strong></p>
+    <p>DATA DE NASCIMENTO: ${pac.dn}</p>
+    <p>DATA DO EXAME: ${pac.data}</p>
+  </div>
+  <h1>Ultrassonografia Duplex Scan de Artérias Carótidas e Vertebrais</h1>
+  <p class="sub">Investigação de Doença Cerebrovascular</p>
+  ${pac.aparelho?`<p style="text-align:center;font-size:10pt;margin-top:2px">APARELHO: ${pac.aparelho}</p>`:""}
+
+  <table>
+    <tr>
+      <th>VASO</th>
+      <th colspan="2">DIREITA</th>
+      <th colspan="2">ESQUERDA</th>
+    </tr>
+    <tr>
+      <th></th>
+      <th>VPS (cm/s)</th>
+      <th>ESTENOSE (NASCET)</th>
+      <th>VPS (cm/s)</th>
+      <th>ESTENOSE (NASCET)</th>
+    </tr>
+    ${nascetRow("ACC", dir.acc.vps, esq.acc.vps)}
+    ${nascetRow("ACI", dir.aci.vps, esq.aci.vps)}
+    ${nascetRow("ACE", dir.ace.vps, esq.ace.vps)}
+    ${nascetRow("A. VERTEBRAL", dir.vert.vps, esq.vert.vps)}
+  </table>
+  <p style="font-size:9pt;color:#555;margin-bottom:10px">VPS &lt; 140 cm/s → &lt;50% | 140–230 cm/s → 50–69% | 230–400 cm/s → 70–89% | &gt;400 cm/s → ≥90%</p>
+
+  <p class="conc">Conclusão</p>
+  <ul>${conclusao()}</ul>
+
+  <div class="obs">
+    <p>• A presença de placa aterosclerótica calcificada representa fator limitante à avaliação de sua superfície e à quantificação precisa do grau de estenose.</p>
+    <p>• A avaliação do grau de estenose da artéria carótida interna foi realizada empregando-se os critérios da Conferência de Consenso da Society of Radiologists in Ultrasound (Radiology, 2003).</p>
+  </div>
+
+  ${pac.cidade?`<p style="text-align:right;margin-top:20px;font-size:10.5pt">${pac.cidade}, ${pac.data}</p>`:""}
+  <div class="ass">
+    <div class="linha"></div>
+    <p class="nome">DR MARCOS ANTONIO B. MANHANELLI FILHO</p>
+    <p>CIRURGIÃO VASCULAR</p>
+    <p>CRM-PA 20.033 | RQE 9676</p>
+  </div>
+</div>
+
+</body></html>`;
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+function App() {
+  const hoje = new Date().toLocaleDateString("pt-BR");
+  const [pac, setPac] = useState({ nome:"", dn:"", data:hoje, aparelho:"", cidade:"" });
+  const [dir, setDir] = useState(initLado());
+  const [esq, setEsq] = useState(initLado());
+  const [tab, setTab] = useState("form");
+  const [html, setHtml] = useState("");
+
+  const iSt = { width:"100%", border:"1px solid #c5d1de", borderRadius:8, padding:"10px 12px", fontSize:14, fontFamily:"inherit", boxSizing:"border-box" };
+  const lSt = { fontSize:12, fontWeight:600, color:"#555", display:"block", marginBottom:3 };
+
+  const handleGerar = () => { setHtml(gerarHTML(pac, dir, esq)); setTab("preview"); };
+  const handleImprimir = () => { const w=window.open("","_blank"); w.document.write(html); w.document.close(); setTimeout(()=>w.print(),500); };
+  const handleNovo = () => { setPac({nome:"",dn:"",data:hoje,aparelho:"",cidade:""}); setDir(initLado()); setEsq(initLado()); setTab("form"); setHtml(""); };
+
+  return (
+    <div style={{ fontFamily:"system-ui,sans-serif", maxWidth:600, margin:"0 auto", padding:"16px 14px", background:"#f0f4f8", minHeight:"100vh" }}>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}`}</style>
+
+      <div style={{ background:"linear-gradient(135deg,#1a3a5c,#2e6da4)", borderRadius:14, padding:"16px 20px", marginBottom:18, color:"#fff", boxShadow:"0 4px 18px #1a3a5c33" }}>
+        <div style={{ fontSize:18, fontWeight:700 }}>Duplex Scan Carótidas</div>
+        <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>Dr. Manhanelli Filho · Gerador de Laudo com Voz</div>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:18 }}>
+        {[["form","📋 Dados"],["preview","📄 Laudo"]].map(([t,l])=>(
+          <button key={t} onClick={()=>setTab(t)}
+            style={{ flex:1, padding:"11px", borderRadius:10, border:"none", cursor:"pointer", fontWeight:700, fontSize:14,
+              background:tab===t?"#1a3a5c":"#fff", color:tab===t?"#fff":"#1a3a5c", boxShadow:"0 1px 4px #0001" }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {tab==="form" && (
+        <div>
+          <div style={{ background:"#fff", borderRadius:12, padding:16, marginBottom:14, boxShadow:"0 1px 4px #0001" }}>
+            <div style={{ fontWeight:700, color:"#1a3a5c", fontSize:13, textTransform:"uppercase", marginBottom:12 }}>Paciente</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div style={{ gridColumn:"span 2" }}>
+                <label style={lSt}>Nome completo</label>
+                <input style={iSt} value={pac.nome} onChange={e=>setPac(p=>({...p,nome:e.target.value}))} placeholder="Nome do paciente"/>
+              </div>
+              <div>
+                <label style={lSt}>Nascimento</label>
+                <input style={iSt} value={pac.dn} onChange={e=>setPac(p=>({...p,dn:e.target.value}))} placeholder="DD/MM/AAAA"/>
+              </div>
+              <div>
+                <label style={lSt}>Data do exame</label>
+                <input style={iSt} value={pac.data} onChange={e=>setPac(p=>({...p,data:e.target.value}))} placeholder="DD/MM/AAAA"/>
+              </div>
+              <div>
+                <label style={lSt}>Aparelho (opcional)</label>
+                <input style={iSt} value={pac.aparelho} onChange={e=>setPac(p=>({...p,aparelho:e.target.value}))} placeholder="Ex: GE VOLUSON P8"/>
+              </div>
+              <div>
+                <label style={lSt}>Cidade (opcional)</label>
+                <input style={iSt} value={pac.cidade} onChange={e=>setPac(p=>({...p,cidade:e.target.value}))} placeholder="Ex: Óbidos"/>
+              </div>
+            </div>
+          </div>
+
+          <LadoForm m={dir} setter={setDir} label="Lado Direito"/>
+          <LadoForm m={esq} setter={setEsq} label="Lado Esquerdo"/>
+
+          <button onClick={handleGerar} disabled={!pac.nome}
+            style={{ width:"100%", padding:"16px", background:!pac.nome?"#aaa":"#1a3a5c", color:"#fff", border:"none", borderRadius:12,
+              fontSize:16, fontWeight:700, cursor:!pac.nome?"not-allowed":"pointer", marginTop:4, boxShadow:"0 4px 14px #1a3a5c44" }}>
+            GERAR LAUDO
+          </button>
+          {!pac.nome && <div style={{ textAlign:"center", fontSize:12, color:"#999", marginTop:6 }}>Preencha o nome do paciente</div>}
+        </div>
+      )}
+
+      {tab==="preview" && (
+        <div>
+          {html ? (
+            <div>
+              <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+                <button onClick={handleImprimir} style={{ flex:2, padding:"13px", background:"#1a3a5c", color:"#fff", border:"none", borderRadius:10, fontWeight:700, cursor:"pointer", fontSize:14, boxShadow:"0 4px 14px #1a3a5c44" }}>
+                  🖨️ Imprimir / Salvar PDF
+                </button>
+                <button onClick={()=>setTab("form")} style={{ flex:1, padding:"13px", background:"#fff", color:"#1a3a5c", border:"none", borderRadius:10, fontWeight:700, cursor:"pointer", fontSize:14 }}>
+                  ← Editar
+                </button>
+                <button onClick={handleNovo} style={{ flex:1, padding:"13px", background:"#fff", color:"#1a3a5c", border:"none", borderRadius:10, fontWeight:700, cursor:"pointer", fontSize:14 }}>
+                  + Novo
+                </button>
+              </div>
+              <div style={{ border:"1px solid #dde3ea", borderRadius:12, overflow:"hidden" }}>
+                <iframe srcDoc={html} style={{ width:"100%", height:680, border:"none" }} title="preview"/>
+              </div>
+            </div>
+          ) : (
+            <div style={{ textAlign:"center", color:"#999", padding:60 }}>Gere o laudo primeiro</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
